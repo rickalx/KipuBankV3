@@ -471,6 +471,51 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
     }
 
     /**
+     * @notice Deposita cualquier token soportado (ETH, USDC, o ERC-20), lo swap a USDC via Uniswap V4, y acredita el USDC a la bóveda del usuario.
+     * @param _tokenIn Dirección del token de entrada (address(0) para ETH).
+     * @param _amountIn Cantidad de entrada.
+     * @param _minUsdcOut Mínimo USDC a recibir (0 para usar slippage default).
+     * @param _permit Datos de permit para Permit2 (vacío si usa allowance).
+     * @dev Enforces bankCap before swap. Handles ETH wrapping, USDC direct deposit, and ERC-20 swaps.
+     */
+    function depositArbitraryToken(address _tokenIn, uint256 _amountIn, uint256 _minUsdcOut, bytes calldata _permit) external payable nonReentrant whenNotPaused {
+        if (_amountIn == 0) revert ZeroAmount();
+        if (_tokenIn == address(0) && msg.value != _amountIn) revert InvalidConstructorParams(); // For ETH, msg.value must match
+
+        uint256 minUsdcOut = _minUsdcOut == 0 ? _calculateMinAmount(_amountIn * 2000, DEFAULT_SLIPPAGE_BPS) : _minUsdcOut; // Rough estimate for USD value
+
+        uint256 amountOut;
+        if (_tokenIn == usdc) {
+            // Direct USDC deposit
+            if (!IERC20(usdc).transferFrom(msg.sender, address(this), _amountIn)) revert ERC20TransferFailed();
+            amountOut = _amountIn;
+        } else {
+            // Swap to USDC
+            amountOut = _swapExactInputSingle(_tokenIn, usdc, _amountIn, minUsdcOut);
+        }
+
+        // Check bankCap
+        uint256 newTotalUsd = totalTokenBalancesUsd[usdc] + amountOut;
+        if (newTotalUsd > bankCapUsd) {
+            revert CapExceeded(newTotalUsd, bankCapUsd);
+        }
+
+        // Effects
+        userTokenBalances[msg.sender][usdc] += amountOut;
+        totalTokenBalances[usdc] += amountOut;
+        totalTokenBalancesUsd[usdc] = newTotalUsd;
+        unchecked {
+            depositCount += 1;
+        }
+
+        // Events
+        if (_tokenIn != usdc) {
+            emit TokenSwapped(msg.sender, _tokenIn, usdc, _amountIn, amountOut);
+        }
+        emit Deposited(msg.sender, usdc, amountOut, userTokenBalances[msg.sender][usdc], totalTokenBalances[usdc]);
+    }
+
+    /**
      * @notice Retira `amount` de ETH de la bóveda del `msg.sender`.
      * @param amount Monto a retirar (en wei).
      * @dev Sigue CEI: checks → effects → interactions.

@@ -11,7 +11,7 @@ contract KipuBankV3SwapTest is Test {
     address public universalRouter = 0x3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD;
     address public weth = 0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14;
     address public usdc = 0x94a9D9AC8a22534E3FaCa9F4e7F2E2cf85d5E4C8;
-    address public poolManager = 0x1d93eFBda2a6FE18C8fCFf65b3F9bC96bCCa1aF2;
+    address public poolManager = 0x1D93eFBDa2A6FE18c8FcFf65B3F9Bc96bCCA1af2;
 
     uint256 public bankCapUsd = 100000000000;
     uint256 public withdrawThreshold = 1000000000000000000;
