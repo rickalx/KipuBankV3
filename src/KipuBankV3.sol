@@ -344,6 +344,72 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
         emit PoolFeeUpdated(_tokenIn, _fee);
     }
 
+    function getPoolFee(address _tokenIn) public view returns (uint24) {
+        uint24 fee = poolFees[_tokenIn];
+        return fee == 0 ? DEFAULT_POOL_FEE : fee;
+    }
+
+    function _calculateMinAmount(uint256 _expectedAmount, uint256 _slippageBps) internal pure returns (uint256) {
+        return _expectedAmount * (10000 - _slippageBps) / 10000;
+    }
+
+    function _sortCurrencies(address tokenIn, address tokenOut) internal pure returns (Currency, Currency) {
+        Currency c0 = Currency.wrap(tokenIn);
+        Currency c1 = Currency.wrap(tokenOut);
+        if (Currency.unwrap(c0) < Currency.unwrap(c1)) {
+            return (c0, c1);
+        } else {
+            return (c1, c0);
+        }
+    }
+
+    function _swapExactInputSingle(address _tokenIn, address _tokenOut, uint256 _amountIn, uint256 _minAmountOut) private returns (uint256 amountOut) {
+        address tokenIn = _tokenIn;
+        if (tokenIn == address(0)) {
+            tokenIn = address(weth);
+            weth.deposit{value: _amountIn}();
+        }
+
+        (Currency c0, Currency c1) = _sortCurrencies(tokenIn, _tokenOut);
+        bool zeroForOne = Currency.unwrap(c0) == tokenIn;
+
+        uint24 fee = getPoolFee(_tokenIn);
+
+        PoolKey memory poolKey = PoolKey({
+            currency0: c0,
+            currency1: c1,
+            fee: fee,
+            tickSpacing: 60,
+            hooks: IHooks(address(0))
+        });
+
+        bytes memory commands = abi.encodePacked(uint8(Commands.V4_SWAP));
+        bytes[] memory inputs = new bytes[](1);
+
+        Actions[] memory actions = new Actions[](3);
+        actions[0] = Actions.SWAP_EXACT_IN_SINGLE;
+        actions[1] = Actions.SETTLE_ALL;
+        actions[2] = Actions.TAKE_ALL;
+
+        bytes[] memory params = new bytes[](3);
+        params[0] = abi.encode(poolKey, zeroForOne, _amountIn, _minAmountOut);
+        params[1] = abi.encode(Currency.wrap(tokenIn));
+        params[2] = abi.encode(Currency.wrap(_tokenOut), address(this));
+
+        inputs[0] = abi.encode(actions, params);
+
+        if (tokenIn != address(0)) {
+            IERC20(tokenIn).approve(address(universalRouter), _amountIn);
+        }
+
+        uint256 balanceBefore = IERC20(_tokenOut).balanceOf(address(this));
+        universalRouter.execute(commands, inputs, block.timestamp);
+        uint256 balanceAfter = IERC20(_tokenOut).balanceOf(address(this));
+        amountOut = balanceAfter - balanceBefore;
+
+        if (amountOut < _minAmountOut) revert SlippageExceeded();
+    }
+
     /*//////////////////////////////////////////////////////////////
                           FUNCIONES EXTERNAS (payable)
      //////////////////////////////////////////////////////////////*/
@@ -526,11 +592,6 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
             // Para otros tokens, asumir precio fijo o revertir
             revert TokenNotSupported(token);
         }
-    }
-
-    function getPoolFee(address _tokenIn) public view returns (uint24) {
-        uint24 fee = poolFees[_tokenIn];
-        return fee == 0 ? DEFAULT_POOL_FEE : fee;
     }
 
     /*//////////////////////////////////////////////////////////////
