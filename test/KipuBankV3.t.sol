@@ -35,13 +35,13 @@ contract KipuBankV3Test is Test {
         );
     }
 
-    function testConstructor() public {
-        assertEq(kipuBank.bankCapUsd(), bankCapUsd);
-        assertEq(kipuBank.withdrawThreshold(), withdrawThreshold);
-        assertEq(address(kipuBank.universalRouter()), universalRouter);
-        assertEq(address(kipuBank.weth()), weth);
-        assertEq(kipuBank.usdc(), address(usdc));
-        assertEq(address(kipuBank.poolManager()), poolManager);
+    function testConstructor() public view {
+        assertEq(kipuBank.BANK_CAP_USD(), bankCapUsd);
+        assertEq(kipuBank.WITHDRAW_THRESHOLD(), withdrawThreshold);
+        assertEq(address(kipuBank.UNIVERSAL_ROUTER()), universalRouter);
+        assertEq(address(kipuBank.WETH()), weth);
+        assertEq(kipuBank.USDC(), address(usdc));
+        assertEq(address(kipuBank.POOL_MANAGER()), poolManager);
     }
 
     function testDepositETH() public {

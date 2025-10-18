@@ -175,13 +175,13 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
      * @notice Límite global en USD (con 6 decimales) que puede custodiar el banco.
      * @dev Fijado en el despliegue; no puede cambiarse.
      */
-    uint256 public immutable bankCapUsd;
+    uint256 public immutable BANK_CAP_USD;
 
     /**
      * @notice Umbral máximo (en wei) que puede retirarse por transacción.
      * @dev Fijado en el despliegue; no puede cambiarse.
      */
-    uint256 public immutable withdrawThreshold;
+    uint256 public immutable WITHDRAW_THRESHOLD;
 
     /**
      * @notice Instancia del feed de Chainlink para ETH/USD.
@@ -190,11 +190,11 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
     AggregatorV3Interface internal dataFeed;
 
     // New V3 immutables
-    IUniversalRouter public immutable universalRouter;
-    IWETH public immutable weth;
-    address public immutable usdc;
-    IPoolManager public immutable poolManager;
-    IPermit2 public immutable permit2;
+    IUniversalRouter public immutable UNIVERSAL_ROUTER;
+    IWETH public immutable WETH;
+    address public immutable USDC;
+    IPoolManager public immutable POOL_MANAGER;
+    IPermit2 public immutable PERMIT2;
 
     /*//////////////////////////////////////////////////////////////
                           VARIABLES DE ALMACENAMIENTO
@@ -245,7 +245,7 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
      * @param amount Cantidad a validar.
      */
     modifier nonZero(uint256 amount) {
-        if (amount == 0) revert ZeroAmount();
+        _nonZero(amount);
         _;
     }
 
@@ -254,8 +254,16 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
      * @param amount Cantidad a validar.
      */
     modifier underThreshold(uint256 amount) {
-        if (amount > withdrawThreshold) revert ThresholdExceeded(amount, withdrawThreshold);
+        _underThreshold(amount);
         _;
+    }
+
+    function _nonZero(uint256 amount) internal pure {
+        if (amount == 0) revert ZeroAmount();
+    }
+
+    function _underThreshold(uint256 amount) internal view {
+        if (amount > WITHDRAW_THRESHOLD) revert ThresholdExceeded(amount, WITHDRAW_THRESHOLD);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -292,17 +300,17 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
         ) {
             revert InvalidConstructorParams();
         }
-        bankCapUsd = bankCapUsd_;
-        withdrawThreshold = withdrawThreshold_;
-        universalRouter = IUniversalRouter(universalRouter_);
-        weth = IWETH(weth_);
-        usdc = usdc_;
-        poolManager = IPoolManager(poolManager_);
-        permit2 = IPermit2(permit2_);
+        BANK_CAP_USD = bankCapUsd_;
+        WITHDRAW_THRESHOLD = withdrawThreshold_;
+        UNIVERSAL_ROUTER = IUniversalRouter(universalRouter_);
+        WETH = IWETH(weth_);
+        USDC = usdc_;
+        POOL_MANAGER = IPoolManager(poolManager_);
+        PERMIT2 = IPermit2(permit2_);
         dataFeed = AggregatorV3Interface(dataFeed_);
 
         // Inicializar ETH como token soportado
-        supportedTokens[address(0)] = TokenInfo(address(0), 18);
+        supportedTokens[address(0)] = TokenInfo({tokenAddress: address(0), decimals: 18});
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -336,7 +344,7 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
         if (supportedTokens[token].tokenAddress != address(0)) revert TokenAlreadySupported(token);
         if (decimals == 0 || decimals > 18) revert InvalidDecimals(decimals); // Asumir máximo 18 decimales
 
-        supportedTokens[token] = TokenInfo(token, decimals);
+        supportedTokens[token] = TokenInfo({tokenAddress: token, decimals: decimals});
         emit TokenAdded(token, decimals);
     }
 
@@ -384,8 +392,8 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
     {
         address tokenIn = _tokenIn;
         if (tokenIn == address(0)) {
-            tokenIn = address(weth);
-            weth.deposit{value: _amountIn}();
+            tokenIn = address(WETH);
+            WETH.deposit{value: _amountIn}();
         }
 
         (Currency c0, Currency c1) = _sortCurrencies(tokenIn, _tokenOut);
@@ -412,11 +420,11 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
         inputs[0] = abi.encode(actions, params);
 
         if (tokenIn != address(0)) {
-            IERC20(tokenIn).approve(address(universalRouter), _amountIn);
+            IERC20(tokenIn).approve(address(UNIVERSAL_ROUTER), _amountIn);
         }
 
         uint256 balanceBefore = IERC20(_tokenOut).balanceOf(address(this));
-        universalRouter.execute(commands, inputs, block.timestamp);
+        UNIVERSAL_ROUTER.execute(commands, inputs, block.timestamp);
         uint256 balanceAfter = IERC20(_tokenOut).balanceOf(address(this));
         amountOut = balanceAfter - balanceBefore;
 
@@ -437,8 +445,8 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
     function deposit() external payable nonZero(msg.value) nonReentrant whenNotPaused {
         uint256 usdValue = convertToUsd(address(0), msg.value);
         uint256 newTotalUsd = totalTokenBalancesUsd[address(0)] + usdValue;
-        if (newTotalUsd > bankCapUsd) {
-            revert CapExceeded(newTotalUsd, bankCapUsd);
+        if (newTotalUsd > BANK_CAP_USD) {
+            revert CapExceeded(newTotalUsd, BANK_CAP_USD);
         }
 
         // Effects
@@ -467,8 +475,8 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
 
         uint256 usdValue = convertToUsd(token, amount);
         uint256 newTotalUsd = totalTokenBalancesUsd[token] + usdValue;
-        if (newTotalUsd > bankCapUsd) {
-            revert CapExceeded(newTotalUsd, bankCapUsd);
+        if (newTotalUsd > BANK_CAP_USD) {
+            revert CapExceeded(newTotalUsd, BANK_CAP_USD);
         }
 
         // Interactions
@@ -506,57 +514,82 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
         if (_permit.length > 0) {
             (IPermit2.PermitSingle memory permitSingle, bytes memory signature) =
                 abi.decode(_permit, (IPermit2.PermitSingle, bytes));
-            permit2.permit(msg.sender, permitSingle, signature);
+            // Validate permit matches the deposit
+            if (permitSingle.details.token != _tokenIn || permitSingle.details.amount < _amountIn ||
+                permitSingle.spender != address(this) || permitSingle.sigDeadline < block.timestamp) {
+                revert InvalidConstructorParams();
+            }
+            PERMIT2.permit(msg.sender, permitSingle, signature);
         }
 
         // Ensure amount fits in uint160 for Permit2
         if (_amountIn > type(uint160).max) revert InvalidConstructorParams();
 
-        uint256 minUsdcOut =
-            _minUsdcOut == 0 ? _calculateMinAmount(_amountIn * 2000, DEFAULT_SLIPPAGE_BPS) : _minUsdcOut; // Rough estimate
+        uint256 minUsdcOut;
+        if (_minUsdcOut == 0) {
+            if (_tokenIn == address(0)) {
+                // For ETH, calculate based on price
+                uint256 usdValue = convertToUsd(address(0), _amountIn);
+                minUsdcOut = _calculateMinAmount(usdValue, DEFAULT_SLIPPAGE_BPS);
+            } else {
+                // Rough estimate for others
+                minUsdcOut = _calculateMinAmount(_amountIn, DEFAULT_SLIPPAGE_BPS);
+            }
+        } else {
+            minUsdcOut = _minUsdcOut;
+        }
+
+        // Pre-check bankCap with minimum expected output
+        uint256 expectedAmountOut = _tokenIn == USDC ? _amountIn : minUsdcOut;
+        uint256 newTotalUsdMin = totalTokenBalancesUsd[USDC] + expectedAmountOut;
+        if (newTotalUsdMin > BANK_CAP_USD) {
+            revert CapExceeded(newTotalUsdMin, BANK_CAP_USD);
+        }
 
         uint256 amountOut;
-        if (_tokenIn == usdc) {
+        if (_tokenIn == USDC) {
             // Direct USDC deposit
             if (_permit.length > 0) {
-                permit2.transferFrom(msg.sender, address(this), uint160(_amountIn), usdc);
+                // casting to 'uint160' is safe because _amountIn is checked <= type(uint160).max
+                PERMIT2.transferFrom(msg.sender, address(this), uint160(_amountIn), USDC);
             } else {
-                if (!IERC20(usdc).transferFrom(msg.sender, address(this), _amountIn)) revert ERC20TransferFailed();
+                if (!IERC20(USDC).transferFrom(msg.sender, address(this), _amountIn)) revert ERC20TransferFailed();
             }
             amountOut = _amountIn;
         } else if (_tokenIn == address(0)) {
             // ETH: already received via msg.value
-            amountOut = _swapExactInputSingle(_tokenIn, usdc, _amountIn, minUsdcOut);
+            amountOut = _swapExactInputSingle(_tokenIn, USDC, _amountIn, minUsdcOut);
         } else {
             // ERC-20: transfer to contract
             if (_permit.length > 0) {
-                permit2.transferFrom(msg.sender, address(this), uint160(_amountIn), _tokenIn);
+                // casting to 'uint160' is safe because _amountIn is checked <= type(uint160).max
+                PERMIT2.transferFrom(msg.sender, address(this), uint160(_amountIn), _tokenIn);
             } else {
                 if (!IERC20(_tokenIn).transferFrom(msg.sender, address(this), _amountIn)) revert ERC20TransferFailed();
             }
             // Swap to USDC
-            amountOut = _swapExactInputSingle(_tokenIn, usdc, _amountIn, minUsdcOut);
+            amountOut = _swapExactInputSingle(_tokenIn, USDC, _amountIn, minUsdcOut);
         }
 
-        // Check bankCap
-        uint256 newTotalUsd = totalTokenBalancesUsd[usdc] + amountOut;
-        if (newTotalUsd > bankCapUsd) {
-            revert CapExceeded(newTotalUsd, bankCapUsd);
+        // Final check with actual amountOut (should pass since amountOut >= minUsdcOut)
+        uint256 newTotalUsd = totalTokenBalancesUsd[USDC] + amountOut;
+        if (newTotalUsd > BANK_CAP_USD) {
+            revert CapExceeded(newTotalUsd, BANK_CAP_USD);
         }
 
         // Effects
-        userTokenBalances[msg.sender][usdc] += amountOut;
-        totalTokenBalances[usdc] += amountOut;
-        totalTokenBalancesUsd[usdc] = newTotalUsd;
+        userTokenBalances[msg.sender][USDC] += amountOut;
+        totalTokenBalances[USDC] += amountOut;
+        totalTokenBalancesUsd[USDC] = newTotalUsd;
         unchecked {
             depositCount += 1;
         }
 
         // Events
-        if (_tokenIn != usdc) {
-            emit TokenSwapped(msg.sender, _tokenIn, usdc, _amountIn, amountOut);
+        if (_tokenIn != USDC) {
+            emit TokenSwapped(msg.sender, _tokenIn, USDC, _amountIn, amountOut);
         }
-        emit Deposited(msg.sender, usdc, amountOut, userTokenBalances[msg.sender][usdc], totalTokenBalances[usdc]);
+        emit Deposited(msg.sender, USDC, amountOut, userTokenBalances[msg.sender][USDC], totalTokenBalances[USDC]);
     }
 
     /**
@@ -647,7 +680,7 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
      * @return feed Dirección del feed ETH/USD.
      */
     function getConfig() external view returns (uint256 capUsd, uint256 threshold, address feed) {
-        return (bankCapUsd, withdrawThreshold, address(dataFeed));
+        return (BANK_CAP_USD, WITHDRAW_THRESHOLD, address(dataFeed));
     }
 
     /**
@@ -658,6 +691,7 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
     function getEthUsdPrice() public view returns (uint256 price) {
         (, int256 answer,,,) = dataFeed.latestRoundData();
         if (answer <= 0) revert InvalidOraclePrice();
+        // casting to 'uint256' is safe because answer > 0
         return uint256(answer);
     }
 

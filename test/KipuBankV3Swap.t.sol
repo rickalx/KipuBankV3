@@ -18,7 +18,7 @@ contract KipuBankV3SwapTest is Test {
     uint256 public withdrawThreshold = 1000000000000000000;
 
     function setUp() public {
-        vm.createSelectFork("https://sepolia.infura.io/v3/YOUR_INFURA_KEY"); // Replace with actual key
+        vm.createSelectFork(vm.envString("SEPOLIA_RPC_URL"));
         vm.prank(owner);
         kipuBank = new KipuBankV3(
             bankCapUsd,
