@@ -3,35 +3,23 @@ pragma solidity ^0.8.30;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
-import {
-    AggregatorV3Interface
-} from "chainlink-brownie-contracts/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
-
-// New V4 imports
-import "./interfaces/IUniversalRouter.sol";
-import "./interfaces/IV4Router.sol";
-import "./interfaces/IPoolManager.sol";
-import "./interfaces/IWETH.sol";
-import "./interfaces/IPermit2.sol";
-import "@uniswap/v4-core/src/types/Currency.sol";
-import "@uniswap/v4-core/src/types/PoolKey.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/security/Pausable.sol";
+import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
 /**
- * @title KipuBankV3
+ * @title KipuBankV2
  * @author Ricardo Flor
  * @notice Bóveda multi-token pausable con soporte para ETH y ERC-20, umbral fijo de retiro por transacción,
  *         límite global de depósitos en USD e integración con oráculos de Chainlink para conversiones.
- *         Upgrade to V3: Integrates Uniswap V4 UniversalRouter for arbitrary token deposits, auto-swapping to USDC.
  * @dev Sigue el patrón checks-effects-interactions, usa errores personalizados,
  *      maneja ETH y ERC-20 de forma segura, expone eventos claros.
  *      Soporta múltiples tokens con control de acceso administrativo, contabilidad en USD y pausas de emergencia.
  */
-contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
+contract KipuBankV2 is Ownable, ReentrancyGuard, Pausable {
     /*//////////////////////////////////////////////////////////////
-                                 ERRORES
-     //////////////////////////////////////////////////////////////*/
+                                ERRORES
+    //////////////////////////////////////////////////////////////*/
 
     /// @notice Cantidad cero no permitida.
     error ZeroAmount();
@@ -75,16 +63,9 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
     /// @notice Precio inválido del oráculo.
     error InvalidOraclePrice();
 
-    // New V3 errors
-    /// @notice Invalid pool fee.
-    error InvalidPoolFee();
-
-    /// @notice Slippage exceeded.
-    error SlippageExceeded();
-
     /*//////////////////////////////////////////////////////////////
-                              EVENTOS
-     //////////////////////////////////////////////////////////////*/
+                             EVENTOS
+    //////////////////////////////////////////////////////////////*/
 
     /**
      * @notice Emitido cuando un usuario deposita un token en su bóveda.
@@ -94,9 +75,7 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
      * @param newBalance Nuevo saldo del depositante después del depósito.
      * @param totalBalance Nuevo total global en custodia después del depósito.
      */
-    event Deposited(
-        address indexed account, address indexed token, uint256 amount, uint256 newBalance, uint256 totalBalance
-    );
+    event Deposited(address indexed account, address indexed token, uint256 amount, uint256 newBalance, uint256 totalBalance);
 
     /**
      * @notice Emitido cuando un usuario retira un token de su bóveda.
@@ -106,9 +85,7 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
      * @param newBalance Nuevo saldo del usuario después del retiro.
      * @param totalBalance Nuevo total global en custodia después del retiro.
      */
-    event Withdrawn(
-        address indexed account, address indexed token, uint256 amount, uint256 newBalance, uint256 totalBalance
-    );
+    event Withdrawn(address indexed account, address indexed token, uint256 amount, uint256 newBalance, uint256 totalBalance);
 
     /**
      * @notice Emitido cuando se añade un token soportado.
@@ -123,41 +100,18 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
      */
     event TokenRemoved(address indexed token);
 
-    // New V3 events
-    /**
-     * @notice Emitido cuando se actualiza la tarifa de pool para un token.
-     * @param token Dirección del token.
-     * @param fee Nueva tarifa de pool.
-     */
-    event PoolFeeUpdated(address indexed token, uint24 fee);
-
-    /**
-     * @notice Emitido cuando se realiza un swap de tokens.
-     * @param account Dirección del usuario.
-     * @param tokenIn Token de entrada.
-     * @param tokenOut Token de salida.
-     * @param amountIn Cantidad de entrada.
-     * @param amountOut Cantidad de salida.
-     */
-    event TokenSwapped(address indexed account, address tokenIn, address tokenOut, uint256 amountIn, uint256 amountOut);
-
     /*//////////////////////////////////////////////////////////////
-                               CONSTANTES
-     //////////////////////////////////////////////////////////////*/
+                              CONSTANTES
+    //////////////////////////////////////////////////////////////*/
 
     /**
      * @notice Decimales de USDC (6).
      */
     uint8 public constant USDC_DECIMALS = 6;
 
-    // New V3 constants
-    uint24 public constant DEFAULT_POOL_FEE = 3000; // 0.3%
-    uint256 public constant DEFAULT_SLIPPAGE_BPS = 50; // 0.5%
-    uint256 public constant MAX_SLIPPAGE_BPS = 500; // 5%
-
     /*//////////////////////////////////////////////////////////////
-                               ESTRUCTURAS
-     //////////////////////////////////////////////////////////////*/
+                              ESTRUCTURAS
+    //////////////////////////////////////////////////////////////*/
 
     /**
      * @notice Información de un token soportado.
@@ -168,8 +122,8 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
     }
 
     /*//////////////////////////////////////////////////////////////
-                           VARIABLES INMUTABLES
-     //////////////////////////////////////////////////////////////*/
+                          VARIABLES INMUTABLES
+    //////////////////////////////////////////////////////////////*/
 
     /**
      * @notice Límite global en USD (con 6 decimales) que puede custodiar el banco.
@@ -189,16 +143,9 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
      */
     AggregatorV3Interface internal dataFeed;
 
-    // New V3 immutables
-    IUniversalRouter public immutable universalRouter;
-    IWETH public immutable weth;
-    address public immutable usdc;
-    IPoolManager public immutable poolManager;
-    IPermit2 public immutable permit2;
-
     /*//////////////////////////////////////////////////////////////
-                          VARIABLES DE ALMACENAMIENTO
-     //////////////////////////////////////////////////////////////*/
+                         VARIABLES DE ALMACENAMIENTO
+    //////////////////////////////////////////////////////////////*/
 
     /**
      * @notice Saldos totales por token custodiados por el contrato.
@@ -233,12 +180,9 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
      */
     mapping(address => TokenInfo) public supportedTokens;
 
-    // New V3 storage
-    mapping(address => uint24) public poolFees;
-
     /*//////////////////////////////////////////////////////////////
-                              MODIFICADORES
-     //////////////////////////////////////////////////////////////*/
+                             MODIFICADORES
+    //////////////////////////////////////////////////////////////*/
 
     /**
      * @notice Garantiza que `amount` sea mayor que cero.
@@ -259,54 +203,36 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
     }
 
     /*//////////////////////////////////////////////////////////////
-                              CONSTRUCTOR
-     //////////////////////////////////////////////////////////////*/
+                             CONSTRUCTOR
+    //////////////////////////////////////////////////////////////*/
 
     /**
      * @notice Inicializa el contrato con el límite global en USD y umbral de retiro.
      * @param bankCapUsd_ Límite global en USD (con 6 decimales, ej. 100000000000 para $100k).
      * @param withdrawThreshold_ Umbral máximo por retiro (en wei).
-     * @param universalRouter_ Dirección del UniversalRouter de Uniswap V4.
-     * @param weth_ Dirección del contrato WETH.
-     * @param usdc_ Dirección del contrato USDC.
-     * @param poolManager_ Dirección del PoolManager de Uniswap V4.
-     * @param permit2_ Dirección del contrato Permit2.
-     * @param dataFeed_ Dirección del feed ETH/USD.
      * @dev Requiere parámetros válidos: bankCapUsd_ > 0, withdrawThreshold_ > 0.
-     *      Inicializa el feed ETH/USD.
+     *      Inicializa el feed ETH/USD para Sepolia.
      */
-    constructor(
-        uint256 bankCapUsd_,
-        uint256 withdrawThreshold_,
-        address universalRouter_,
-        address weth_,
-        address usdc_,
-        address poolManager_,
-        address permit2_,
-        address dataFeed_
-    ) Ownable(msg.sender) {
-        if (
-            bankCapUsd_ == 0 || withdrawThreshold_ == 0 || universalRouter_ == address(0) || weth_ == address(0)
-                || usdc_ == address(0) || poolManager_ == address(0) || permit2_ == address(0)
-                || dataFeed_ == address(0)
-        ) {
+    constructor(uint256 bankCapUsd_, uint256 withdrawThreshold_) Ownable(msg.sender) {
+        if (bankCapUsd_ == 0 || withdrawThreshold_ == 0) {
             revert InvalidConstructorParams();
         }
         bankCapUsd = bankCapUsd_;
         withdrawThreshold = withdrawThreshold_;
-        universalRouter = IUniversalRouter(universalRouter_);
-        weth = IWETH(weth_);
-        usdc = usdc_;
-        poolManager = IPoolManager(poolManager_);
-        permit2 = IPermit2(permit2_);
-        dataFeed = AggregatorV3Interface(dataFeed_);
 
-        // Inicializar ETH como token soportado
-        supportedTokens[address(0)] = TokenInfo(address(0), 18);
-    }
+        /**
+         * Network: Sepolia
+         * Data Feed: ETH/USD
+         * Address: 0x694AA1769357215DE4FAC081bf1f309aDC325306
+         */
+        dataFeed = AggregatorV3Interface(0x694AA1769357215DE4FAC081bf1f309aDC325306);
 
-    /*//////////////////////////////////////////////////////////////
-                          FUNCIONES EXTERNAS (admin)
+         // Inicializar ETH como token soportado
+         supportedTokens[address(0)] = TokenInfo(address(0), 18);
+     }
+
+     /*//////////////////////////////////////////////////////////////
+                         FUNCIONES EXTERNAS (admin)
      //////////////////////////////////////////////////////////////*/
 
     /**
@@ -332,99 +258,31 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
      * @dev Solo el owner puede añadir tokens. No permite añadir ETH (address(0)) de nuevo.
      */
     function addSupportedToken(address token, uint8 decimals) external onlyOwner {
-        if (token == address(0)) revert InvalidConstructorParams(); // ETH ya está soportado
-        if (supportedTokens[token].tokenAddress != address(0)) revert TokenAlreadySupported(token);
-        if (decimals == 0 || decimals > 18) revert InvalidDecimals(decimals); // Asumir máximo 18 decimales
+         if (token == address(0)) revert InvalidConstructorParams(); // ETH ya está soportado
+         if (supportedTokens[token].tokenAddress != address(0)) revert TokenAlreadySupported(token);
+         if (decimals == 0 || decimals > 18) revert InvalidDecimals(decimals); // Asumir máximo 18 decimales
 
-        supportedTokens[token] = TokenInfo(token, decimals);
-        emit TokenAdded(token, decimals);
-    }
+         supportedTokens[token] = TokenInfo(token, decimals);
+         emit TokenAdded(token, decimals);
+     }
 
-    /**
-     * @notice Remueve un token soportado.
-     * @param token Dirección del token a remover.
-     * @dev Solo el owner puede remover. No permite remover ETH.
-     */
-    function removeSupportedToken(address token) external onlyOwner {
-        if (token == address(0)) revert InvalidConstructorParams(); // No remover ETH
-        if (supportedTokens[token].tokenAddress == address(0)) revert TokenNotSupported(token);
+     /**
+      * @notice Remueve un token soportado.
+      * @param token Dirección del token a remover.
+      * @dev Solo el owner puede remover. No permite remover ETH.
+      */
+     function removeSupportedToken(address token) external onlyOwner {
+         if (token == address(0)) revert InvalidConstructorParams(); // No remover ETH
+         if (supportedTokens[token].tokenAddress == address(0)) revert TokenNotSupported(token);
 
-        delete supportedTokens[token];
-        emit TokenRemoved(token);
-    }
+          delete supportedTokens[token];
+          emit TokenRemoved(token);
+      }
 
-    // New V3 admin function
-    function setPoolFee(address _tokenIn, uint24 _fee) external onlyOwner {
-        poolFees[_tokenIn] = _fee;
-        emit PoolFeeUpdated(_tokenIn, _fee);
-    }
 
-    function getPoolFee(address _tokenIn) public view returns (uint24) {
-        uint24 fee = poolFees[_tokenIn];
-        return fee == 0 ? DEFAULT_POOL_FEE : fee;
-    }
 
-    function _calculateMinAmount(uint256 _expectedAmount, uint256 _slippageBps) internal pure returns (uint256) {
-        return _expectedAmount * (10000 - _slippageBps) / 10000;
-    }
-
-    function _sortCurrencies(address tokenIn, address tokenOut) internal pure returns (Currency, Currency) {
-        Currency c0 = Currency.wrap(tokenIn);
-        Currency c1 = Currency.wrap(tokenOut);
-        if (Currency.unwrap(c0) < Currency.unwrap(c1)) {
-            return (c0, c1);
-        } else {
-            return (c1, c0);
-        }
-    }
-
-    function _swapExactInputSingle(address _tokenIn, address _tokenOut, uint256 _amountIn, uint256 _minAmountOut)
-        private
-        returns (uint256 amountOut)
-    {
-        address tokenIn = _tokenIn;
-        if (tokenIn == address(0)) {
-            tokenIn = address(weth);
-            weth.deposit{value: _amountIn}();
-        }
-
-        (Currency c0, Currency c1) = _sortCurrencies(tokenIn, _tokenOut);
-        bool zeroForOne = Currency.unwrap(c0) == tokenIn;
-
-        uint24 fee = getPoolFee(_tokenIn);
-
-        PoolKey memory poolKey =
-            PoolKey({currency0: c0, currency1: c1, fee: fee, tickSpacing: 60, hooks: IHooks(address(0))});
-
-        bytes memory commands = abi.encodePacked(uint8(Commands.V4_SWAP));
-        bytes[] memory inputs = new bytes[](1);
-
-        Actions[] memory actions = new Actions[](3);
-        actions[0] = Actions.SWAP_EXACT_IN_SINGLE;
-        actions[1] = Actions.SETTLE_ALL;
-        actions[2] = Actions.TAKE_ALL;
-
-        bytes[] memory params = new bytes[](3);
-        params[0] = abi.encode(poolKey, zeroForOne, _amountIn, _minAmountOut);
-        params[1] = abi.encode(Currency.wrap(tokenIn));
-        params[2] = abi.encode(Currency.wrap(_tokenOut), address(this));
-
-        inputs[0] = abi.encode(actions, params);
-
-        if (tokenIn != address(0)) {
-            IERC20(tokenIn).approve(address(universalRouter), _amountIn);
-        }
-
-        uint256 balanceBefore = IERC20(_tokenOut).balanceOf(address(this));
-        universalRouter.execute(commands, inputs, block.timestamp);
-        uint256 balanceAfter = IERC20(_tokenOut).balanceOf(address(this));
-        amountOut = balanceAfter - balanceBefore;
-
-        if (amountOut < _minAmountOut) revert SlippageExceeded();
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                          FUNCIONES EXTERNAS (payable)
+     /*//////////////////////////////////////////////////////////////
+                         FUNCIONES EXTERNAS (payable)
      //////////////////////////////////////////////////////////////*/
 
     /**
@@ -449,10 +307,8 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
             depositCount += 1;
         }
 
-        emit Deposited(
-            msg.sender, address(0), msg.value, userTokenBalances[msg.sender][address(0)], totalTokenBalances[address(0)]
-        );
-    }
+         emit Deposited(msg.sender, address(0), msg.value, userTokenBalances[msg.sender][address(0)], totalTokenBalances[address(0)]);
+     }
 
     /**
      * @notice Deposita un ERC-20 token en la bóveda del `msg.sender`.
@@ -465,99 +321,25 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
     function depositERC20(address token, uint256 amount) external nonZero(amount) nonReentrant whenNotPaused {
         if (supportedTokens[token].tokenAddress == address(0)) revert TokenNotSupported(token);
 
-        uint256 usdValue = convertToUsd(token, amount);
-        uint256 newTotalUsd = totalTokenBalancesUsd[token] + usdValue;
-        if (newTotalUsd > bankCapUsd) {
-            revert CapExceeded(newTotalUsd, bankCapUsd);
-        }
+         uint256 usdValue = convertToUsd(token, amount);
+         uint256 newTotalUsd = totalTokenBalancesUsd[token] + usdValue;
+         if (newTotalUsd > bankCapUsd) {
+             revert CapExceeded(newTotalUsd, bankCapUsd);
+         }
 
-        // Interactions
-        if (!IERC20(token).transferFrom(msg.sender, address(this), amount)) revert ERC20TransferFailed();
+         // Interactions
+         if (!IERC20(token).transferFrom(msg.sender, address(this), amount)) revert ERC20TransferFailed();
 
-        // Effects
-        userTokenBalances[msg.sender][token] += amount;
-        totalTokenBalances[token] += amount;
-        totalTokenBalancesUsd[token] = newTotalUsd;
-        unchecked {
-            depositCount += 1;
-        }
+         // Effects
+         userTokenBalances[msg.sender][token] += amount;
+         totalTokenBalances[token] += amount;
+         totalTokenBalancesUsd[token] = newTotalUsd;
+         unchecked {
+             depositCount += 1;
+         }
 
-        emit Deposited(msg.sender, token, amount, userTokenBalances[msg.sender][token], totalTokenBalances[token]);
-    }
-
-    /**
-     * @notice Deposita cualquier token soportado (ETH, USDC, o ERC-20), lo swap a USDC via Uniswap V4, y acredita el USDC a la bóveda del usuario.
-     * @param _tokenIn Dirección del token de entrada (address(0) para ETH).
-     * @param _amountIn Cantidad de entrada.
-     * @param _minUsdcOut Mínimo USDC a recibir (0 para usar slippage default).
-     * @param _permit Datos de permit para Permit2 (PermitSingle + signature, vacío si usa allowance).
-     * @dev Enforces bankCap before swap. Handles ETH wrapping, USDC direct deposit, and ERC-20 swaps with Permit2.
-     */
-    function depositArbitraryToken(address _tokenIn, uint256 _amountIn, uint256 _minUsdcOut, bytes calldata _permit)
-        external
-        payable
-        nonReentrant
-        whenNotPaused
-    {
-        if (_amountIn == 0) revert ZeroAmount();
-        if (_tokenIn == address(0) && msg.value != _amountIn) revert InvalidConstructorParams(); // For ETH, msg.value must match
-
-        // Handle Permit2 if provided
-        if (_permit.length > 0) {
-            (IPermit2.PermitSingle memory permitSingle, bytes memory signature) =
-                abi.decode(_permit, (IPermit2.PermitSingle, bytes));
-            permit2.permit(msg.sender, permitSingle, signature);
-        }
-
-        // Ensure amount fits in uint160 for Permit2
-        if (_amountIn > type(uint160).max) revert InvalidConstructorParams();
-
-        uint256 minUsdcOut =
-            _minUsdcOut == 0 ? _calculateMinAmount(_amountIn * 2000, DEFAULT_SLIPPAGE_BPS) : _minUsdcOut; // Rough estimate
-
-        uint256 amountOut;
-        if (_tokenIn == usdc) {
-            // Direct USDC deposit
-            if (_permit.length > 0) {
-                permit2.transferFrom(msg.sender, address(this), uint160(_amountIn), usdc);
-            } else {
-                if (!IERC20(usdc).transferFrom(msg.sender, address(this), _amountIn)) revert ERC20TransferFailed();
-            }
-            amountOut = _amountIn;
-        } else if (_tokenIn == address(0)) {
-            // ETH: already received via msg.value
-            amountOut = _swapExactInputSingle(_tokenIn, usdc, _amountIn, minUsdcOut);
-        } else {
-            // ERC-20: transfer to contract
-            if (_permit.length > 0) {
-                permit2.transferFrom(msg.sender, address(this), uint160(_amountIn), _tokenIn);
-            } else {
-                if (!IERC20(_tokenIn).transferFrom(msg.sender, address(this), _amountIn)) revert ERC20TransferFailed();
-            }
-            // Swap to USDC
-            amountOut = _swapExactInputSingle(_tokenIn, usdc, _amountIn, minUsdcOut);
-        }
-
-        // Check bankCap
-        uint256 newTotalUsd = totalTokenBalancesUsd[usdc] + amountOut;
-        if (newTotalUsd > bankCapUsd) {
-            revert CapExceeded(newTotalUsd, bankCapUsd);
-        }
-
-        // Effects
-        userTokenBalances[msg.sender][usdc] += amountOut;
-        totalTokenBalances[usdc] += amountOut;
-        totalTokenBalancesUsd[usdc] = newTotalUsd;
-        unchecked {
-            depositCount += 1;
-        }
-
-        // Events
-        if (_tokenIn != usdc) {
-            emit TokenSwapped(msg.sender, _tokenIn, usdc, _amountIn, amountOut);
-        }
-        emit Deposited(msg.sender, usdc, amountOut, userTokenBalances[msg.sender][usdc], totalTokenBalances[usdc]);
-    }
+         emit Deposited(msg.sender, token, amount, userTokenBalances[msg.sender][token], totalTokenBalances[token]);
+     }
 
     /**
      * @notice Retira `amount` de ETH de la bóveda del `msg.sender`.
@@ -568,7 +350,13 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
      * @custom:error InsufficientVault si el saldo del usuario es insuficiente.
      * @custom:error NativeTransferFailed si falla el envío de ETH.
      */
-    function withdraw(uint256 amount) external nonZero(amount) underThreshold(amount) nonReentrant whenNotPaused {
+    function withdraw(uint256 amount)
+        external
+        nonZero(amount)
+        underThreshold(amount)
+        nonReentrant
+        whenNotPaused
+    {
         uint256 balance = userTokenBalances[msg.sender][address(0)];
         if (balance < amount) revert InsufficientVault(balance, amount);
 
@@ -584,9 +372,7 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
         // Interactions
         _sendETH(msg.sender, amount);
 
-        emit Withdrawn(
-            msg.sender, address(0), amount, userTokenBalances[msg.sender][address(0)], totalTokenBalances[address(0)]
-        );
+        emit Withdrawn(msg.sender, address(0), amount, userTokenBalances[msg.sender][address(0)], totalTokenBalances[address(0)]);
     }
 
     /**
@@ -612,13 +398,13 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
         if (balance < amount) revert InsufficientVault(balance, amount);
 
         // Effects
-        uint256 usdValue = convertToUsd(token, amount);
-        unchecked {
-            userTokenBalances[msg.sender][token] = balance - amount;
-            totalTokenBalances[token] -= amount;
-            totalTokenBalancesUsd[token] -= usdValue;
-            withdrawalCount += 1;
-        }
+         uint256 usdValue = convertToUsd(token, amount);
+         unchecked {
+             userTokenBalances[msg.sender][token] = balance - amount;
+             totalTokenBalances[token] -= amount;
+             totalTokenBalancesUsd[token] -= usdValue;
+             withdrawalCount += 1;
+         }
 
         // Interactions
         if (!IERC20(token).transfer(msg.sender, amount)) revert ERC20TransferFailed();
@@ -627,8 +413,8 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
     }
 
     /*//////////////////////////////////////////////////////////////
-                         FUNCIONES EXTERNAS (view)
-     //////////////////////////////////////////////////////////////*/
+                        FUNCIONES EXTERNAS (view)
+    //////////////////////////////////////////////////////////////*/
 
     /**
      * @notice Devuelve el saldo de bóveda para una cuenta y token.
@@ -679,9 +465,11 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
         }
     }
 
+
+
     /*//////////////////////////////////////////////////////////////
-                          FUNCIONES PRIVADAS
-     //////////////////////////////////////////////////////////////*/
+                         FUNCIONES PRIVADAS
+    //////////////////////////////////////////////////////////////*/
 
     /**
      * @notice Envía ETH de forma segura usando `call`.
@@ -692,13 +480,14 @@ contract KipuBankV3 is Ownable, ReentrancyGuard, Pausable {
      */
     function _sendETH(address to, uint256 amount) private {
         // solhint-disable-next-line avoid-low-level-calls
-        (bool ok,) = to.call{value: amount}("");
+        (bool ok, ) = to.call{value: amount}("");
         if (!ok) revert NativeTransferFailed();
     }
 
+
     /*//////////////////////////////////////////////////////////////
-                          RECEIVE / FALLBACK
-     //////////////////////////////////////////////////////////////*/
+                         RECEIVE / FALLBACK
+    //////////////////////////////////////////////////////////////*/
 
     /**
      * @dev Evita depósitos accidentales vía `receive`. Fuerza el uso de `deposit()`.

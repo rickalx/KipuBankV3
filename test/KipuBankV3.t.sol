@@ -11,22 +11,26 @@ contract KipuBankV3Test is Test {
     address public user = address(2);
     address public universalRouter = address(3);
     address public weth = address(4);
-    address public usdc = address(5);
     address public poolManager = address(6);
+    address public permit2 = address(7);
+    MockERC20 public usdc;
 
     uint256 public bankCapUsd = 100000000000; // 100k USD
     uint256 public withdrawThreshold = 1000000000000000000; // 1 ETH
 
     function setUp() public {
+        MockPermit2 mockPermit2 = new MockPermit2();
         MockOracle mockOracle = new MockOracle();
+        usdc = new MockERC20();
         vm.prank(owner);
         kipuBank = new KipuBankV3(
             bankCapUsd,
             withdrawThreshold,
             universalRouter,
             weth,
-            usdc,
+            address(usdc),
             poolManager,
+            address(mockPermit2),
             address(mockOracle)
         );
     }
@@ -36,7 +40,7 @@ contract KipuBankV3Test is Test {
         assertEq(kipuBank.withdrawThreshold(), withdrawThreshold);
         assertEq(address(kipuBank.universalRouter()), universalRouter);
         assertEq(address(kipuBank.weth()), weth);
-        assertEq(kipuBank.usdc(), usdc);
+        assertEq(kipuBank.usdc(), address(usdc));
         assertEq(address(kipuBank.poolManager()), poolManager);
     }
 
@@ -98,6 +102,17 @@ contract KipuBankV3Test is Test {
         kipuBank.withdraw(2 ether);
     }
 
+    function testDepositArbitraryTokenUSDC() public {
+        usdc.mint(user, 10 * 10 ** 6); // 10 USDC
+        vm.prank(user);
+        usdc.approve(address(kipuBank), 10 * 10 ** 6);
+
+        vm.prank(user);
+        kipuBank.depositArbitraryToken(address(usdc), 10 * 10 ** 6, 0, "");
+
+        assertEq(kipuBank.vaultOf(user, address(usdc)), 10 * 10 ** 6);
+    }
+
     function testPausable() public {
         vm.prank(owner);
         kipuBank.pause();
@@ -115,6 +130,17 @@ contract KipuBankV3Test is Test {
         vm.prank(user);
         kipuBank.deposit{value: 1 ether}();
         // No reentrancy test needed yet
+    }
+}
+
+contract MockPermit2 {
+    function permit(address owner, IPermit2.PermitSingle calldata permitSingle, bytes calldata signature) external {
+        // Mock: do nothing
+    }
+
+    function transferFrom(address from, address to, uint160 amount, address token) external {
+        // Mock: transfer the token
+        require(IERC20(token).transferFrom(from, to, amount), "Transfer failed");
     }
 }
 
